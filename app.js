@@ -140,27 +140,28 @@ async function sha256(value){
   return `fallback_${h}`;
 }
 function generateCode(){ return String(Math.floor(100000 + Math.random() * 900000)); }
+
 async function sendEmail(to, subject, body, category="general"){
   const email = { id: uid("email"), to, subject, body, category, status: "queued", createdAt: nowISO(), providerMessage: "Waiting to send" };
   state.emails.unshift(email);
   state.emails = state.emails.slice(0, 100);
   save();
   try {
-    const res = await fetch("/api/send-email", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ to, subject, body, category })
+    await emailjs.send("service_mt1ys5t", "template_1mwyrz6", {
+      to_email: to,
+      subject: subject,
+      message: body
     });
-    const data = await res.json().catch(() => ({}));
-    email.status = data.simulated ? "simulated" : (data.ok ? "sent" : "failed");
-    email.providerMessage = data.message || (data.simulated ? "No email API key configured; message saved in LPS Mail Center." : "Email endpoint responded.");
+    email.status = "sent";
+    email.providerMessage = "Sent via EmailJS.";
   } catch (error) {
     email.status = "simulated";
-    email.providerMessage = "Static/local run: message saved in LPS Mail Center.";
+    email.providerMessage = "EmailJS error: " + (error.text || error.message || "Unknown error");
   }
   save();
   return email;
 }
+
 async function issueCode(email, purpose){
   const code = generateCode();
   state.verifications[normalizeEmail(email)] = { code, purpose, expiresAt: Date.now() + 10 * 60 * 1000, attempts: 0 };
@@ -236,7 +237,7 @@ function renderAuth(){
           ${pendingAuth ? renderVerificationCard() : (authMode === "login" ? renderLoginForm() : renderRegisterForm())}
           <details class="dev-mail">
             <summary>Email Service Preview / Verification Codes</summary>
-            <p class="text-muted">When Resend is not configured or a provider error occurs, LPS still records each email here so the Phase 2 demo can show the internal email service and verification workflow.</p>
+            <p class="text-muted">When EmailJS is not configured or a provider error occurs, LPS still records each email here so the Phase 2 demo can show the internal email service and verification workflow.</p>
             <pre>${esc(latestCodePreview())}</pre>
           </details>
         </div>
@@ -273,7 +274,7 @@ function renderRegisterForm(){
 function renderVerificationCard(){
   const title = pendingAuth.purpose === "login" ? "Two-step verification" : "Verify your email";
   return `<form class="form-grid" onsubmit="handleVerify(event)" novalidate>
-    <div class="notice success"><strong>${title}</strong><br>A 6-digit code was sent to <strong>${esc(pendingAuth.email)}</strong>. Use your real email if Resend is configured, or open the Email Service Preview below during the class demo.</div>
+    <div class="notice success"><strong>${title}</strong><br>A 6-digit code was sent to <strong>${esc(pendingAuth.email)}</strong>. Check your inbox.</div>
     <div class="form-message"></div>
     <div class="field"><label>Verification code</label><input name="code" inputmode="numeric" maxlength="6" placeholder="123456"><small class="field-error" data-error-for="code"></small></div>
     <div class="btn-row">
@@ -321,7 +322,7 @@ window.handleRegister = async function(event){
   logActivity("Customer", `${user.email} registered a new customer account.`);
   await issueCode(email, "register");
   pendingAuth = { type:"customer", email, userId:user.id, purpose:"register" };
-  toast("Account created. Verify the email code to activate it.", "success");
+  toast("Account created. Check your email for the verification code.", "success");
   render();
 };
 window.handleLogin = async function(event){
@@ -359,7 +360,7 @@ window.handleLogin = async function(event){
   }
   await issueCode(email, "login");
   pendingAuth = { type:"customer", email, userId:user.id, purpose:"login" };
-  toast("Two-step login code sent.", "success");
+  toast("Two-step login code sent. Check your email.", "success");
   render();
 };
 window.handleVerify = async function(event){
@@ -966,7 +967,7 @@ async function recalculateWinners(ticketId){
   save(); logActivity("Administrator", `Winning numbers updated for ${ticket.name}; ${winners} new winner notification(s) sent.`);
 }
 function renderClaimingCenter(){
-  return `${pageTitle("Claiming Center", "Verify electronic tickets for prizes of $600 or more using ticket number or confirmation number. This satisfies the project feedback about Claiming Center functionality.")}
+  return `${pageTitle("Claiming Center", "Verify electronic tickets for prizes of $600 or more using ticket number or confirmation number.")}
   <div class="card mb"><div class="field"><label>Search ticket / confirmation number</label><input id="claimSearch" placeholder="LPS-ABCD-12345 or TX-123456789" oninput="renderClaimSearch(this.value)"></div></div>
   <div id="claimResults">${renderClaimResults("")}</div>`;
 }
@@ -988,7 +989,7 @@ window.verifyAtClaimingCenter = async function(orderId, ticketId){
   state.regulatoryReports.unshift(report); save(); await sendEmail(user.email, "LPS claiming center verification complete", `Your prize ${money(ticket.prizeAmount)} for ticket ${ticket.ticketNumber} has been verified at the claiming center. Tax/regulatory reporting has been prepared.`, "claiming-center"); logActivity("Claiming Center", `Verified ${ticket.ticketNumber} for ${money(ticket.prizeAmount)} and created regulatory report.`); toast("Ticket verified and regulatory report created.", "success"); render();
 };
 function renderRegulatoryReports(){
-  return `${pageTitle("Regulatory Reports", "Prepare tax and regulatory reporting records for $600+ verified prize claims. This represents the Regulatory Agency/IRS data flow.", `<button class="btn light" onclick="exportReports()">Export JSON</button>`)}
+  return `${pageTitle("Regulatory Reports", "Prepare tax and regulatory reporting records for $600+ verified prize claims.", `<button class="btn light" onclick="exportReports()">Export JSON</button>`)}
   <div class="card">${!state.regulatoryReports.length ? `<div class="empty">No $600+ regulatory reports yet. Verify a winning ticket in Claiming Center to generate one.</div>` : `<div class="table-wrap"><table><thead><tr><th>Verified</th><th>Customer</th><th>Ticket</th><th>Prize</th><th>Status</th></tr></thead><tbody>${state.regulatoryReports.map(r=>`<tr><td>${new Date(r.verifiedAt).toLocaleString()}</td><td>${esc(r.customerName)}<br><span class="text-muted">${esc(r.customerEmail)}</span></td><td>${esc(r.ticketNumber)}<br><span class="text-muted">${esc(r.confirmationNumber)}</span></td><td>${money(r.prizeAmount)}</td><td><span class="badge purple">${esc(r.reportStatus)}</span></td></tr>`).join("")}</tbody></table></div>`}</div>`;
 }
 window.exportReports = function(){
@@ -996,12 +997,12 @@ window.exportReports = function(){
   const url = URL.createObjectURL(blob); const a = document.createElement("a"); a.href = url; a.download = "lps-regulatory-reports.json"; a.click(); URL.revokeObjectURL(url);
 };
 function renderEmailCenter(){
-  return `${pageTitle("Internal Email Service", "LPS logs and sends verification codes, purchase confirmations, winner notifications, claim confirmations, and claiming center messages. Real sending works when the Vercel Resend API key and verified sender are configured.")}
-  <div class="card mb"><div class="notice ${state.emails.some(e=>e.status==='sent')?"success":"warn"}">Current mode: ${state.emails.some(e=>e.status==='sent') ? "Real email sent through /api/send-email" : "Simulation/local mail queue. Configure RESEND_API_KEY and RESEND_FROM_EMAIL in Vercel to send real email."}</div></div>
+  return `${pageTitle("Internal Email Service", "LPS logs and sends verification codes, purchase confirmations, winner notifications, claim confirmations, and claiming center messages via EmailJS.")}
+  <div class="card mb"><div class="notice ${state.emails.some(e=>e.status==='sent')?"success":"warn"}">Current mode: ${state.emails.some(e=>e.status==='sent') ? "Real emails being sent via EmailJS." : "No emails sent yet. EmailJS will send to any valid email address."}</div></div>
   <div class="card">${!state.emails.length ? `<div class="empty">No emails have been sent yet.</div>` : `<div class="table-wrap"><table><thead><tr><th>Time</th><th>To</th><th>Category</th><th>Subject / Body</th><th>Status</th></tr></thead><tbody>${state.emails.map(e=>`<tr><td>${new Date(e.createdAt).toLocaleString()}</td><td>${esc(e.to)}</td><td><span class="badge gray">${esc(e.category)}</span></td><td><strong>${esc(e.subject)}</strong><br><span class="text-muted">${esc(e.body)}</span></td><td><span class="badge ${e.status==='sent'?"green":e.status==='failed'?"red":"gold"}">${esc(e.status)}</span><br><span class="text-muted">${esc(e.providerMessage)}</span></td></tr>`).join("")}</tbody></table></div>`}</div>`;
 }
 function renderCustomers(){
-  return `${pageTitle("Customer Accounts", "View registered customer accounts and verification status. Customers create their own accounts; there are no preloaded customer demo accounts.")}
+  return `${pageTitle("Customer Accounts", "View registered customer accounts and verification status.")}
   <div class="card">${!state.users.length ? `<div class="empty">No customers registered yet.</div>` : `<div class="table-wrap"><table><thead><tr><th>Name</th><th>Email</th><th>Phone</th><th>Verified</th><th>Orders</th></tr></thead><tbody>${state.users.map(u=>`<tr><td>${esc(u.fullName)}</td><td>${esc(u.email)}</td><td>${esc(u.phone)}</td><td><span class="badge ${u.verified?"green":"red"}">${u.verified?"Verified":"Pending"}</span></td><td>${state.orders.filter(o=>o.userId===u.id).length}</td></tr>`).join("")}</tbody></table></div>`}</div>`;
 }
 render();
